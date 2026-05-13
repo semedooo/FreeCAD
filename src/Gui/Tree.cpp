@@ -38,6 +38,8 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QComboBox>
+#include <QToolButton>
 
 
 #include <Base/Console.h>
@@ -988,6 +990,8 @@ void TreeWidget::resetItemSearch()
 
 void TreeWidget::startItemSearch(QLineEdit* edit)
 {
+    Q_UNUSED(edit);
+
     resetItemSearch();
     searchDoc = nullptr;
     searchContextDoc = nullptr;
@@ -1006,17 +1010,6 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
         searchDoc = Application::Instance->activeDocument();
     }
 
-    App::DocumentObject* obj = nullptr;
-    if (searchContextDoc && !searchContextDoc->getDocument()->getObjects().empty()) {
-        obj = searchContextDoc->getDocument()->getObjects().front();
-    }
-    else if (searchDoc && !searchDoc->getDocument()->getObjects().empty()) {
-        obj = searchDoc->getDocument()->getObjects().front();
-    }
-
-    if (obj) {
-        static_cast<ExpressionLineEdit*>(edit)->setDocumentObject(obj);
-    }
 }
 
 void TreeWidget::itemSearch(const QString& text, bool select)
@@ -4167,22 +4160,45 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     pLayout->addWidget(this->treeWidget);
     connect(this->treeWidget, &TreeWidget::emitSearchObjects, this, &TreePanel::showEditor);
 
-    this->searchBox = new Gui::ExpressionLineEdit(this, true);
-    static_cast<ExpressionLineEdit*>(this->searchBox)
-        ->setExactMatch(Gui::ExpressionParameter::instance()->isExactMatch());
-    pLayout->addWidget(this->searchBox);
+    auto searchLayout = new QHBoxLayout();
+    searchLayout->setSpacing(2);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+
+    this->searchBox = new QComboBox(this);
+    this->searchBox->setEditable(true);
+    this->searchBox->setInsertPolicy(QComboBox::NoInsert);
+    this->searchBox->lineEdit()->setPlaceholderText(tr("Search... (supports * and ?)"));
+    // this->searchBox->lineEdit()->setClearButtonEnabled(true);
+    this->searchBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    this->searchBox->setToolTip(tr("Type to filter the tree. Use '*' for any sequence "
+                                    "and '?' for a single character. Press Enter to commit."));
     this->searchBox->hide();
-    this->searchBox->installEventFilter(this);
-    this->searchBox->setPlaceholderText(tr("Search"));
-    connect(this->searchBox, &QLineEdit::returnPressed, this, &TreePanel::accept);
-    connect(this->searchBox, &QLineEdit::textChanged, this, &TreePanel::itemSearch);
+
+    this->searchBox->lineEdit()->installEventFilter(this);
+
+    this->globalSearchBtn = new QToolButton(this);
+    this->globalSearchBtn->setCheckable(true);
+
+    this->globalSearchBtn->setText(tr("Global"));
+    this->globalSearchBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+
+    this->globalSearchBtn->setAutoRaise(true);
+    this->globalSearchBtn->setToolTip(tr("Search across all open documents"));
+    this->globalSearchBtn->hide();
+
+    searchLayout->addWidget(this->searchBox);
+    searchLayout->addWidget(this->globalSearchBtn);
+    pLayout->addLayout(searchLayout);
+
+    connect(this->searchBox->lineEdit(), &QLineEdit::returnPressed, this, &TreePanel::accept);
+    connect(this->searchBox, &QComboBox::editTextChanged, this, &TreePanel::itemSearch);
 }
 
 TreePanel::~TreePanel() = default;
 
 void TreePanel::accept()
 {
-    QString text = this->searchBox->text();
+    QString text = this->searchBox->currentText();
     hideEditor();
     this->treeWidget->setFocus();
     this->treeWidget->itemSearch(text, true);
@@ -4217,15 +4233,16 @@ bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
 void TreePanel::showEditor()
 {
     this->searchBox->show();
+    this->globalSearchBtn->show();
     this->searchBox->setFocus();
-    this->treeWidget->startItemSearch(searchBox);
+    this->treeWidget->startItemSearch(this->searchBox->lineEdit());
 }
 
 void TreePanel::hideEditor()
 {
-    static_cast<ExpressionLineEdit*>(this->searchBox)->setDocumentObject(nullptr);
-    this->searchBox->clear();
+    this->searchBox->clearEditText(); 
     this->searchBox->hide();
+    this->globalSearchBtn->hide();
     this->treeWidget->resetItemSearch();
     auto sels = this->treeWidget->selectedItems();
     if (!sels.empty()) {

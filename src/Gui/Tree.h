@@ -38,6 +38,8 @@
 #include <Gui/TreeItemMode.h>
 
 class QLineEdit;
+class QComboBox;
+class QToolButton;
 
 namespace Gui
 {
@@ -590,7 +592,14 @@ private Q_SLOTS:
     void itemSearch(const QString& text);
 
 private:
-    QLineEdit* searchBox;
+
+    void loadSearchHistory();
+    void saveSearchHistory(const QString& accepted);
+    static constexpr int MaxSearchHistory = 10;
+    
+    QComboBox* searchBox;
+    QToolButton* globalSearchBtn;
+    
     TreeWidget* treeWidget;
 };
 
