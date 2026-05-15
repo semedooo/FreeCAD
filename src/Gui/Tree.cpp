@@ -38,6 +38,7 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QToolButton>
 
 
 #include <Base/Console.h>
@@ -1019,7 +1020,7 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
     }
 }
 
-void TreeWidget::itemSearch(const QString& text, bool select)
+bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
 {
     resetItemSearch();
 
@@ -1029,7 +1030,7 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         if (!docItem) {
             FC_TRACE("item search no document");
             resetItemSearch();
-            return;
+            return false;
         }
     }
 
@@ -1037,12 +1038,12 @@ void TreeWidget::itemSearch(const QString& text, bool select)
     const auto& objs = doc->getObjects();
     if (objs.empty()) {
         FC_TRACE("item search no objects");
-        return;
+        return false;
     }
     std::string txt(text.toUtf8().constData());
     try {
         if (txt.empty()) {
-            return;
+            return false;
         }
         if (txt.find("<<") == std::string::npos) {
             auto pos = txt.find('.');
@@ -1064,12 +1065,12 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         auto path = App::ObjectIdentifier::parse(objs.front(), txt);
         if (path.getPropertyName() != "_self") {
             FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         auto obj = path.getDocumentObject();
         if (!obj) {
             FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         std::string subname = path.getSubObjectName();
         App::DocumentObject* parent = nullptr;
@@ -1090,11 +1091,11 @@ void TreeWidget::itemSearch(const QString& text, bool select)
                 if (docItem->document()->getDocument() == obj->getDocument()) {
                     // this shouldn't happen
                     FC_LOG("Object " << txt << " not found in " << doc->getName());
-                    return;
+                    return false;
                 }
                 auto it = DocumentMap.find(Application::Instance->getDocument(obj->getDocument()));
                 if (it == DocumentMap.end()) {
-                    return;
+                    return false;
                 }
                 docItem = it->second;
                 parent = docItem->getTopParent(obj, subname);
@@ -1104,7 +1105,7 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         auto item = docItem->findItemByObject(true, obj, subname.c_str());
         if (!item) {
             FC_TRACE("item " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         scrollToItem(item);
         Selection().setPreselect(
@@ -1131,10 +1132,13 @@ void TreeWidget::itemSearch(const QString& text, bool select)
             item->setBackground(0, QColor(255, 255, 0, 100));
         }
         FC_TRACE("found item " << txt);
+        return true;
     }
     catch (...) {
         FC_TRACE("item " << txt << " search exception in " << doc->getName());
+        return false;
     }
+    return false;
 }
 
 Gui::Document* TreeWidget::selectedDocument()
@@ -4152,6 +4156,14 @@ void TreeWidget::onSelectionChanged(const SelectionChanges& msg)
 
 /* TRANSLATOR Gui::TreePanel */
 
+namespace {
+    ParameterGrp::handle searchPrefs() {
+        return App::GetApplication().GetUserParameter()
+            .GetGroup("BaseApp")->GetGroup("Preferences")
+            ->GetGroup("TreeSearch");
+    }
+}
+
 TreePanel::TreePanel(const char* name, QWidget* parent)
     : QWidget(parent)
 {
@@ -4167,25 +4179,77 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     pLayout->addWidget(this->treeWidget);
     connect(this->treeWidget, &TreeWidget::emitSearchObjects, this, &TreePanel::showEditor);
 
+    searchRow = new QWidget(this);
+    auto* rowLayout = new QHBoxLayout(searchRow);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(2);
+
     this->searchBox = new Gui::ExpressionLineEdit(this, true);
     static_cast<ExpressionLineEdit*>(this->searchBox)
         ->setExactMatch(Gui::ExpressionParameter::instance()->isExactMatch());
-    pLayout->addWidget(this->searchBox);
-    this->searchBox->hide();
-    this->searchBox->installEventFilter(this);
     this->searchBox->setPlaceholderText(tr("Search"));
+    this->searchBox->setClearButtonEnabled(true);
+    this->searchBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    searchBox->setToolTip(tr("Type to filter the model tree.\n"
+                         "Use * for any sequence, ? for a single character.\n"
+                         "Press Enter to confirm and save to history."));
+    this->searchBox->installEventFilter(this);
+    
+    historyMenu = new QMenu(this);
+    this->historyBtn = new QToolButton(searchRow);
+    this->historyBtn->setIcon(QIcon::fromTheme(QStringLiteral("document-open-recent"),
+                        BitmapFactory().pixmap("document-open-recent")));
+    this->historyBtn->setAutoRaise(true);
+    this->historyBtn->setPopupMode(QToolButton::InstantPopup);
+    this->historyBtn->setMenu(historyMenu);
+    this->historyBtn->setToolTip(tr("Recent searches"));
+    this->historyBtn->setEnabled(false);
+
+    this->globalBtn = new QToolButton(searchRow);
+    this->globalBtn->setCheckable(true);
+    this->globalBtn->setAutoRaise(true);
+    this->globalBtn->setIcon(QIcon::fromTheme(QStringLiteral("edit-find"),
+                    BitmapFactory().pixmap("edit-find")));
+    this->globalBtn->setToolTip(tr("Search across all open documents"));
+    this->globalBtn->setStatusTip(tr("When enabled, search traverses every open document, "
+                                "not just the active one."));
+    
+    rowLayout->addWidget(searchBox);
+    rowLayout->addWidget(historyBtn);
+    rowLayout->addWidget(globalBtn);
+
+    pLayout->addWidget(searchRow);
+    searchRow->hide();
+    
     connect(this->searchBox, &QLineEdit::returnPressed, this, &TreePanel::accept);
     connect(this->searchBox, &QLineEdit::textChanged, this, &TreePanel::itemSearch);
+    connect(this->historyMenu, &QMenu::triggered,
+            this, &TreePanel::onHistoryActionTriggered);
+
+    connect(this->globalBtn, &QToolButton::toggled, this, [this](bool on) {
+        auto hGrp = searchPrefs();
+        hGrp->SetBool("Global", on);
+        const QString text = searchBox->text();
+        if (!text.trimmed().isEmpty()) {
+            treeWidget->itemSearch(text, false, on);
+        }
+    });
 }
 
 TreePanel::~TreePanel() = default;
 
 void TreePanel::accept()
 {
-    QString text = this->searchBox->text();
-    hideEditor();
-    this->treeWidget->setFocus();
-    this->treeWidget->itemSearch(text, true);
+    QString text = this->searchBox->text().trimmed();
+    if (text.isEmpty()) {
+        hideEditor();
+        return;
+    }
+    
+    const bool matched = treeWidget->itemSearch(text, true, globalBtn->isChecked());
+    if (matched) {
+        saveSearchHistory(text);
+    }
 }
 
 bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
@@ -4216,6 +4280,13 @@ bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
 
 void TreePanel::showEditor()
 {
+    {
+        QSignalBlocker block(this->globalBtn);
+        auto hGrp = App::GetApplication().GetUserParameter()
+                        .GetGroup("BaseApp")->GetGroup("Preferences")
+                        ->GetGroup("TreeSearch");
+        this->globalBtn->setChecked(hGrp->GetBool("Global", false));
+    }
     this->searchBox->show();
     this->searchBox->setFocus();
     this->treeWidget->startItemSearch(searchBox);
@@ -4235,7 +4306,21 @@ void TreePanel::hideEditor()
 
 void TreePanel::itemSearch(const QString& text)
 {
-    this->treeWidget->itemSearch(text, false);
+    this->treeWidget->itemSearch(text, false, this->globalBtn->isChecked());
+}
+
+void TreePanel::onHistoryActionTriggered(QAction* action)
+{
+    const QString term = action->text();
+    // Populate the box. Block textChanged to avoid a redundant live search.
+    {
+        QSignalBlocker block(this->searchBox);
+        this->searchBox->setText(term);
+    }
+    // Manually invoke the search so the user sees results immediately.
+    this->treeWidget->itemSearch(term, false, this->globalBtn->isChecked());
+    this->searchBox->setFocus();
+    this->searchBox->selectAll();
 }
 
 // ----------------------------------------------------------------------------
