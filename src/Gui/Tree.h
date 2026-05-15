@@ -135,7 +135,7 @@ public:
 
     void resetItemSearch();
     void startItemSearch(QLineEdit*);
-    void itemSearch(const QString& text, bool select);
+    bool itemSearch(const QString& text, bool select, bool global = false);
 
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
@@ -594,8 +594,8 @@ private Q_SLOTS:
 private:
 
     void loadSearchHistory();
-    void saveSearchHistory(const QString& accepted);
-    static constexpr int MaxSearchHistory = 10;
+    void saveSearchHistory(const QString& text);
+    static constexpr int maxSearchHistory = 10;
     
     QComboBox* searchBox;
     QToolButton* globalSearchBtn;

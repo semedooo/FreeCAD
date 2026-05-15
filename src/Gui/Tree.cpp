@@ -1012,7 +1012,7 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
 
 }
 
-void TreeWidget::itemSearch(const QString& text, bool select)
+bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
 {
     resetItemSearch();
 
@@ -1022,7 +1022,7 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         if (!docItem) {
             FC_TRACE("item search no document");
             resetItemSearch();
-            return;
+            return false;
         }
     }
 
@@ -1030,12 +1030,12 @@ void TreeWidget::itemSearch(const QString& text, bool select)
     const auto& objs = doc->getObjects();
     if (objs.empty()) {
         FC_TRACE("item search no objects");
-        return;
+        return false;
     }
     std::string txt(text.toUtf8().constData());
     try {
         if (txt.empty()) {
-            return;
+            return false;
         }
         if (txt.find("<<") == std::string::npos) {
             auto pos = txt.find('.');
@@ -1057,12 +1057,12 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         auto path = App::ObjectIdentifier::parse(objs.front(), txt);
         if (path.getPropertyName() != "_self") {
             FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         auto obj = path.getDocumentObject();
         if (!obj) {
             FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         std::string subname = path.getSubObjectName();
         App::DocumentObject* parent = nullptr;
@@ -1083,11 +1083,11 @@ void TreeWidget::itemSearch(const QString& text, bool select)
                 if (docItem->document()->getDocument() == obj->getDocument()) {
                     // this shouldn't happen
                     FC_LOG("Object " << txt << " not found in " << doc->getName());
-                    return;
+                    return false;
                 }
                 auto it = DocumentMap.find(Application::Instance->getDocument(obj->getDocument()));
                 if (it == DocumentMap.end()) {
-                    return;
+                    return false;
                 }
                 docItem = it->second;
                 parent = docItem->getTopParent(obj, subname);
@@ -1097,7 +1097,7 @@ void TreeWidget::itemSearch(const QString& text, bool select)
         auto item = docItem->findItemByObject(true, obj, subname.c_str());
         if (!item) {
             FC_TRACE("item " << txt << " not found in " << doc->getName());
-            return;
+            return false;
         }
         scrollToItem(item);
         Selection().setPreselect(
@@ -1124,10 +1124,13 @@ void TreeWidget::itemSearch(const QString& text, bool select)
             item->setBackground(0, QColor(255, 255, 0, 100));
         }
         FC_TRACE("found item " << txt);
+        return true;
     }
     catch (...) {
         FC_TRACE("item " << txt << " search exception in " << doc->getName());
+        return false;
     }
+    return false;
 }
 
 Gui::Document* TreeWidget::selectedDocument()
@@ -4167,7 +4170,7 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     this->searchBox = new QComboBox(this);
     this->searchBox->setEditable(true);
     this->searchBox->setInsertPolicy(QComboBox::NoInsert);
-    this->searchBox->lineEdit()->setPlaceholderText(tr("Search... (supports * and ?)"));
+    this->searchBox->lineEdit()->setPlaceholderText(tr("Search..."));
     // this->searchBox->lineEdit()->setClearButtonEnabled(true);
     this->searchBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     this->searchBox->setToolTip(tr("Type to filter the tree. Use '*' for any sequence "
@@ -4192,6 +4195,8 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
 
     connect(this->searchBox->lineEdit(), &QLineEdit::returnPressed, this, &TreePanel::accept);
     connect(this->searchBox, &QComboBox::editTextChanged, this, &TreePanel::itemSearch);
+
+    loadSearchHistory();
 }
 
 TreePanel::~TreePanel() = default;
@@ -4199,9 +4204,14 @@ TreePanel::~TreePanel() = default;
 void TreePanel::accept()
 {
     QString text = this->searchBox->currentText();
-    hideEditor();
-    this->treeWidget->setFocus();
-    this->treeWidget->itemSearch(text, true);
+    // hideEditor();
+    // this->treeWidget->setFocus();
+    bool found = this->treeWidget->itemSearch(text, true, this->globalSearchBtn->isChecked());
+    if (found) {
+        saveSearchHistory(text);
+        hideEditor();
+        this->treeWidget->setFocus();
+    }
 }
 
 bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
@@ -4232,6 +4242,7 @@ bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
 
 void TreePanel::showEditor()
 {
+    this->searchBox->clearEditText(); 
     this->searchBox->show();
     this->globalSearchBtn->show();
     this->searchBox->setFocus();
@@ -4250,9 +4261,65 @@ void TreePanel::hideEditor()
     }
 }
 
+namespace {
+    ParameterGrp::handle searchPrefs() {
+        return App::GetApplication().GetUserParameter()
+        .GetGroup("BaseApp")->GetGroup("Preferences")
+        ->GetGroup("TreeSearch");
+    }
+}
+
+void TreePanel::loadSearchHistory()
+{
+    QSignalBlocker block(this->searchBox);
+    this->searchBox->clear();
+    auto hGrp = searchPrefs();
+    for (int i = 0; i < maxSearchHistory; ++i) {
+        const std::string key = "Item" + std::to_string(i);
+        const std::string val = hGrp->GetASCII(key.c_str(), "");
+        if (val.empty()) {
+            break;
+        }
+        this->searchBox->addItem(QString::fromUtf8(val.c_str()));
+    }
+    this->searchBox->setCurrentIndex(-1);
+}
+
+void TreePanel::saveSearchHistory(const QString& text)
+{
+    if (text.trimmed().isEmpty()) {
+        return;
+    }
+    QStringList history;
+    history << text;
+    for (int i = 0; i < this->searchBox->count(); ++i) {
+        const QString item = this->searchBox->itemText(i);
+        if (item != text && !item.trimmed().isEmpty()) {
+            history << item;
+        }
+        if (history.size() >= maxSearchHistory) {
+            break;
+        }
+    }
+    auto hGrp = searchPrefs();
+
+    for (int i = 0; i < maxSearchHistory; ++i) {
+        hGrp->RemoveASCII(("Item" + std::to_string(i)).c_str());
+    }
+
+    for (int i = 0; i < history.size(); ++i) {
+        hGrp->SetASCII(("Item" + std::to_string(i)).c_str(), history.at(i).toUtf8().constData());
+    }
+
+    QSignalBlocker block(this->searchBox);
+    this->searchBox->clear();
+    this->searchBox->addItems(history);
+    this->searchBox->setCurrentText(text);
+}
+
 void TreePanel::itemSearch(const QString& text)
 {
-    this->treeWidget->itemSearch(text, false);
+    this->treeWidget->itemSearch(text, false, this->globalSearchBtn->isChecked());
 }
 
 // ----------------------------------------------------------------------------
