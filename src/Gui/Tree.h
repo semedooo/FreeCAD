@@ -601,10 +601,8 @@ private:
     QToolButton*             globalBtn   = nullptr;
     QMenu*                   historyMenu = nullptr;
 
-    void loadSearchHistory();
     void saveSearchHistory(const QString& term);
-    void rebuildHistoryMenu();
-    static constexpr int kMaxHistory = 20;
+    static constexpr int kMaxHistory = 10;
 };
 
 /**

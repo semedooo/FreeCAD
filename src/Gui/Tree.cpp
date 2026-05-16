@@ -39,6 +39,7 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QToolButton>
+#include <QStyle>
 
 
 #include <Base/Console.h>
@@ -4187,32 +4188,28 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     this->searchBox = new Gui::ExpressionLineEdit(this, true);
     static_cast<ExpressionLineEdit*>(this->searchBox)
         ->setExactMatch(Gui::ExpressionParameter::instance()->isExactMatch());
-    this->searchBox->setPlaceholderText(tr("Search"));
-    this->searchBox->setClearButtonEnabled(true);
+    this->searchBox->setPlaceholderText(tr("Search..."));
     this->searchBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    searchBox->setToolTip(tr("Type to filter the model tree.\n"
-                         "Use * for any sequence, ? for a single character.\n"
-                         "Press Enter to confirm and save to history."));
+    searchBox->setToolTip(tr("Search the model tree.\n"
+                         "Use * for any sequence, ? for a single character.\n"));
     this->searchBox->installEventFilter(this);
     
     historyMenu = new QMenu(this);
     this->historyBtn = new QToolButton(searchRow);
-    this->historyBtn->setIcon(QIcon::fromTheme(QStringLiteral("document-open-recent"),
-                        BitmapFactory().pixmap("document-open-recent")));
     this->historyBtn->setAutoRaise(true);
     this->historyBtn->setPopupMode(QToolButton::InstantPopup);
     this->historyBtn->setMenu(historyMenu);
-    this->historyBtn->setToolTip(tr("Recent searches"));
+    this->historyBtn->setToolTip(tr("<b>Search History</b> (Alt+Down)<br>Access recent searches from this session"));
     this->historyBtn->setEnabled(false);
+    this->historyBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum); 
 
     this->globalBtn = new QToolButton(searchRow);
     this->globalBtn->setCheckable(true);
     this->globalBtn->setAutoRaise(true);
-    this->globalBtn->setIcon(QIcon::fromTheme(QStringLiteral("edit-find"),
-                    BitmapFactory().pixmap("edit-find")));
-    this->globalBtn->setToolTip(tr("Search across all open documents"));
-    this->globalBtn->setStatusTip(tr("When enabled, search traverses every open document, "
-                                "not just the active one."));
+    this->globalBtn->setText(tr("Global"));
+    this->globalBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    this->globalBtn->setToolTip(tr("<b>Global Search</b><br>Enable to search in the tree models of all open documents"));
+    this->globalBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
     
     rowLayout->addWidget(searchBox);
     rowLayout->addWidget(historyBtn);
@@ -4234,6 +4231,16 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
             treeWidget->itemSearch(text, false, on);
         }
     });
+
+    connect(this->historyMenu, &QMenu::hovered, this, [this](QAction* action) {
+        if (action) {
+            this->treeWidget->itemSearch(action->text(), false, this->globalBtn->isChecked());
+        }
+    });
+
+    connect(this->historyMenu, &QMenu::aboutToHide, this, [this]() {
+        this->treeWidget->itemSearch(this->searchBox->text(), false, this->globalBtn->isChecked());
+    });
 }
 
 TreePanel::~TreePanel() = default;
@@ -4249,6 +4256,8 @@ void TreePanel::accept()
     const bool matched = treeWidget->itemSearch(text, true, globalBtn->isChecked());
     if (matched) {
         saveSearchHistory(text);
+        hideEditor();
+        this->treeWidget->setFocus();
     }
 }
 
@@ -4260,43 +4269,52 @@ bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
 
     if (ev->type() == QEvent::KeyPress) {
         bool consumed = false;
-        int key = static_cast<QKeyEvent*>(ev)->key();
+        auto* keyEvent = static_cast<QKeyEvent*>(ev);
+        int key = keyEvent->key();
+
+        bool altPressed = (keyEvent->modifiers() & Qt::AltModifier);
+        if (key == Qt::Key_Down && this->historyBtn->isEnabled()) {
+            if (altPressed || this->searchBox->text().isEmpty()) {
+                this->historyBtn->showMenu();
+                return true;
+            }
+        }
+
         switch (key) {
             case Qt::Key_Escape:
                 hideEditor();
                 consumed = true;
                 treeWidget->setFocus();
                 break;
-
             default:
                 break;
         }
-
         return consumed;
     }
-
     return false;
 }
 
 void TreePanel::showEditor()
 {
     {
-        QSignalBlocker block(this->globalBtn);
-        auto hGrp = App::GetApplication().GetUserParameter()
-                        .GetGroup("BaseApp")->GetGroup("Preferences")
-                        ->GetGroup("TreeSearch");
-        this->globalBtn->setChecked(hGrp->GetBool("Global", false));
+        QSignalBlocker block(globalBtn);
+        bool noSelection = this->treeWidget->selectedItems().isEmpty();
+        bool globalState = searchPrefs()->GetBool("Global", noSelection ? true : false);
+        if (noSelection) {
+            globalState = true;
+        }
+        globalBtn->setChecked(globalState);
     }
-    this->searchBox->show();
-    this->searchBox->setFocus();
-    this->treeWidget->startItemSearch(searchBox);
+    searchRow->show();
+    searchBox->setFocus();
+    treeWidget->startItemSearch(searchBox);
 }
 
 void TreePanel::hideEditor()
 {
     static_cast<ExpressionLineEdit*>(this->searchBox)->setDocumentObject(nullptr);
     this->searchBox->clear();
-    this->searchBox->hide();
+    this->searchRow->hide();
     this->treeWidget->resetItemSearch();
     auto sels = this->treeWidget->selectedItems();
     if (!sels.empty()) {
@@ -4312,15 +4330,42 @@ void TreePanel::itemSearch(const QString& text)
 void TreePanel::onHistoryActionTriggered(QAction* action)
 {
     const QString term = action->text();
-    // Populate the box. Block textChanged to avoid a redundant live search.
     {
         QSignalBlocker block(this->searchBox);
         this->searchBox->setText(term);
     }
-    // Manually invoke the search so the user sees results immediately.
     this->treeWidget->itemSearch(term, false, this->globalBtn->isChecked());
     this->searchBox->setFocus();
     this->searchBox->selectAll();
+}
+
+void TreePanel::saveSearchHistory(const QString& term)
+{
+    if (term.trimmed().isEmpty()) {
+        return;
+    }
+
+    for (QAction* act : this->historyMenu->actions()) {
+        if (act->text() == term) {
+            this->historyMenu->removeAction(act);
+            act->deleteLater();
+        }
+    }
+
+    QAction* newAct = new QAction(term, this);
+    if (this->historyMenu->isEmpty()) {
+        this->historyMenu->addAction(newAct);
+    } else {
+        this->historyMenu->insertAction(this->historyMenu->actions().first(), newAct);
+    }
+
+    while (this->historyMenu->actions().size() > kMaxHistory) {
+        QAction* lastAct = this->historyMenu->actions().last();
+        this->historyMenu->removeAction(lastAct);
+        lastAct->deleteLater();
+    }
+
+    this->historyBtn->setEnabled(true);
 }
 
 // ----------------------------------------------------------------------------
