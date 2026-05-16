@@ -38,6 +38,9 @@
 #include <Gui/TreeItemMode.h>
 
 class QLineEdit;
+class QToolButton;
+class QMenu;
+class QCheckBox;
 
 namespace Gui
 {
@@ -51,6 +54,7 @@ class TreeWidgetItemDelegate;
 
 class DocumentItem;
 class Command;
+class ExpressionLineEdit;
 
 GuiExport bool isTreeViewDragging();
 
@@ -133,7 +137,7 @@ public:
 
     void resetItemSearch();
     void startItemSearch(QLineEdit*);
-    void itemSearch(const QString& text, bool select);
+    bool itemSearch(const QString& text, bool select, bool global = false);
 
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
@@ -588,10 +592,18 @@ private Q_SLOTS:
     void showEditor();
     void hideEditor();
     void itemSearch(const QString& text);
+    void onHistoryActionTriggered(QAction* action);
 
 private:
-    QLineEdit* searchBox;
-    TreeWidget* treeWidget;
+    TreeWidget*              treeWidget  = nullptr;
+    QWidget*                 searchRow   = nullptr;
+    Gui::ExpressionLineEdit* searchBox   = nullptr;
+    QToolButton*             historyBtn  = nullptr;
+    QCheckBox*               globalBtn   = nullptr;
+    QMenu*                   historyMenu = nullptr;
+
+    void saveSearchHistory(const QString& term);
+    static constexpr int kMaxHistory = 10;
 };
 
 /**
