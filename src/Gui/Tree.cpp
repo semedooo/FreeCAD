@@ -39,7 +39,7 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QToolButton>
-#include <QStyle>
+#include <QCheckBox>
 
 
 #include <Base/Console.h>
@@ -4157,14 +4157,6 @@ void TreeWidget::onSelectionChanged(const SelectionChanges& msg)
 
 /* TRANSLATOR Gui::TreePanel */
 
-namespace {
-    ParameterGrp::handle searchPrefs() {
-        return App::GetApplication().GetUserParameter()
-            .GetGroup("BaseApp")->GetGroup("Preferences")
-            ->GetGroup("TreeSearch");
-    }
-}
-
 TreePanel::TreePanel(const char* name, QWidget* parent)
     : QWidget(parent)
 {
@@ -4201,13 +4193,10 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     this->historyBtn->setMenu(historyMenu);
     this->historyBtn->setToolTip(tr("<b>Search History</b> (Alt+Down)<br>Access recent searches from this session"));
     this->historyBtn->setEnabled(false);
-    this->historyBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum); 
+    this->historyBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+    this->historyBtn->setFixedWidth(15);
 
-    this->globalBtn = new QToolButton(searchRow);
-    this->globalBtn->setCheckable(true);
-    this->globalBtn->setAutoRaise(true);
-    this->globalBtn->setText(tr("Global"));
-    this->globalBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    this->globalBtn = new QCheckBox(tr("Global"), searchRow);
     this->globalBtn->setToolTip(tr("<b>Global Search</b><br>Enable to search in the tree models of all open documents"));
     this->globalBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
     
@@ -4223,9 +4212,7 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     connect(this->historyMenu, &QMenu::triggered,
             this, &TreePanel::onHistoryActionTriggered);
 
-    connect(this->globalBtn, &QToolButton::toggled, this, [this](bool on) {
-        auto hGrp = searchPrefs();
-        hGrp->SetBool("Global", on);
+    connect(this->globalBtn, &QCheckBox::toggled, this, [this](bool on) {
         const QString text = searchBox->text();
         if (!text.trimmed().isEmpty()) {
             treeWidget->itemSearch(text, false, on);
@@ -4299,11 +4286,7 @@ void TreePanel::showEditor()
     {
         QSignalBlocker block(globalBtn);
         bool noSelection = this->treeWidget->selectedItems().isEmpty();
-        bool globalState = searchPrefs()->GetBool("Global", noSelection ? true : false);
-        if (noSelection) {
-            globalState = true;
-        }
-        globalBtn->setChecked(globalState);
+        globalBtn->setChecked(noSelection);
     }
     searchRow->show();
     searchBox->setFocus();

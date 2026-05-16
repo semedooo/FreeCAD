@@ -40,6 +40,7 @@
 class QLineEdit;
 class QToolButton;
 class QMenu;
+class QCheckBox;
 
 namespace Gui
 {
@@ -598,7 +599,7 @@ private:
     QWidget*                 searchRow   = nullptr;
     Gui::ExpressionLineEdit* searchBox   = nullptr;
     QToolButton*             historyBtn  = nullptr;
-    QToolButton*             globalBtn   = nullptr;
+    QCheckBox*               globalBtn   = nullptr;
     QMenu*                   historyMenu = nullptr;
 
     void saveSearchHistory(const QString& term);
