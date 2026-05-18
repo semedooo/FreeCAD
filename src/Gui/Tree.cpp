@@ -1023,6 +1023,7 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
 
 bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
 {
+    Q_UNUSED(global);
     resetItemSearch();
 
     auto docItem = getDocumentItem(searchDoc);
