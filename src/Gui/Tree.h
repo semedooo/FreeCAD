@@ -24,6 +24,9 @@
 #pragma once
 
 #include <unordered_map>
+#include <utility>
+#include <vector>
+#include <QBrush>
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QStyledItemDelegate>
@@ -41,6 +44,7 @@ class QLineEdit;
 class QToolButton;
 class QMenu;
 class QCheckBox;
+class QRegularExpression;
 
 namespace Gui
 {
@@ -208,6 +212,13 @@ private:
     void selectAllDocumentLevel();
     void selectAllGroupLevel(const QTreeWidgetItem* targetNode, bool isGroup);
     void clearSelectAllContext();
+    void searchInDocumentItem(
+        QTreeWidgetItem* node,
+        const QRegularExpression& re,
+        QTreeWidgetItem*& firstHit,
+        int& hitCount
+    );
+    static constexpr int kSearchHitCap = 500;
 
 protected Q_SLOTS:
     void onCreateGroup();
@@ -287,6 +298,7 @@ private:
     Command* skipRecomputeCommand;
     QTreeWidgetItem* contextItem;
     App::DocumentObject* searchObject;
+    std::vector<std::pair<QTreeWidgetItem*, QBrush>> searchHighlights;
     Gui::Document* searchDoc;
     Gui::Document* searchContextDoc;
     DocumentObjectItem* editingItem;

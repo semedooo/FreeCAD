@@ -1008,6 +1008,13 @@ void TreeWidget::checkTopParent(App::DocumentObject*& obj, std::string& subname)
 
 void TreeWidget::resetItemSearch()
 {
+    for (const auto& [item, brush] : searchHighlights) {
+        if (item) {
+            item->setBackground(0, brush);
+        }
+    }
+    searchHighlights.clear();
+
     if (!searchObject) {
         return;
     }
@@ -1023,6 +1030,36 @@ void TreeWidget::resetItemSearch()
         }
     }
     searchObject = nullptr;
+}
+
+void TreeWidget::searchInDocumentItem(
+    QTreeWidgetItem* node,
+    const QRegularExpression& re,
+    QTreeWidgetItem*& firstHit,
+    int& hitCount
+)
+{
+    if (!node || hitCount >= kSearchHitCap) {
+        return;
+    }
+
+    const QString label = node->text(0);
+    if (regexMatches(re, label)) {
+        ++hitCount;
+        if (!firstHit) {
+            firstHit = node;
+        }
+        for (QTreeWidgetItem* parent = node->parent(); parent; parent = parent->parent()) {
+            parent->setExpanded(true);
+        }
+        node->setExpanded(true);
+        searchHighlights.emplace_back(node, node->background(0));
+        node->setBackground(0, QColor(255, 255, 0, 100));
+    }
+
+    for (int i = 0, count = node->childCount(); i < count && hitCount < kSearchHitCap; ++i) {
+        searchInDocumentItem(node->child(i), re, firstHit, hitCount);
+    }
 }
 
 void TreeWidget::startItemSearch(QLineEdit* edit)
@@ -1091,45 +1128,25 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
         return false;
     }
 
-    auto itemMatches = [&re](DocumentObjectItem* item) {
-        if (regexMatches(re, item->text(0)) || regexMatches(re, QString::fromUtf8(item->getName()))) {
-            return true;
-        }
-
-        auto* vp = item->object();
-        auto* obj = vp ? vp->getObject() : nullptr;
-        return obj && (regexMatches(re, QString::fromUtf8(obj->Label.getValue()))
-            || regexMatches(re, QString::fromUtf8(obj->Label2.getValue())));
-    };
-
-    auto findMatch = [&](auto&& findMatch, QTreeWidgetItem* parent) -> DocumentObjectItem* {
-        for (int i = 0, count = parent->childCount(); i < count; ++i) {
-            auto child = parent->child(i);
-            if (!child) {
-                continue;
-            }
-            if (child->type() == ObjectType) {
-                auto item = static_cast<DocumentObjectItem*>(child);
-                if (itemMatches(item)) {
-                    return item;
-                }
-            }
-            if (auto item = findMatch(findMatch, child)) {
-                return item;
-            }
-        }
-        return nullptr;
-    };
-
-    auto item = findMatch(findMatch, docItem);
-    if (!item) {
+    QTreeWidgetItem* firstHit = nullptr;
+    int hitCount = 0;
+    searchInDocumentItem(docItem, re, firstHit, hitCount);
+    if (hitCount == 0 || !firstHit) {
         FC_TRACE("item " << searchText.toUtf8().constData() << " not found in " << doc->getName());
         return false;
     }
 
+    scrollToItem(firstHit);
+    if (firstHit->type() != ObjectType) {
+        FC_TRACE("found item " << searchText.toUtf8().constData());
+        return true;
+    }
+
+    auto item = static_cast<DocumentObjectItem*>(firstHit);
     auto* vp = item->object();
     auto obj = vp ? vp->getObject() : nullptr;
     if (!obj) {
+        resetItemSearch();
         return false;
     }
 
@@ -1145,7 +1162,6 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
     const std::string subnameText = subname.str();
 
     try {
-        scrollToItem(item);
         Selection().setPreselect(
             obj->getDocument()->getName(),
             obj->getNameInDocument(),
@@ -1167,13 +1183,13 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
         }
         else {
             searchObject = item->object()->getObject();
-            item->setBackground(0, QColor(255, 255, 0, 100));
         }
         FC_TRACE("found item " << searchText.toUtf8().constData());
         return true;
     }
     catch (...) {
         FC_TRACE("item " << searchText.toUtf8().constData() << " search exception in " << doc->getName());
+        resetItemSearch();
         return false;
     }
     return false;
