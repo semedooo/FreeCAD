@@ -1063,6 +1063,11 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
     Q_UNUSED(global);
     resetItemSearch();
 
+    const QString searchText = text.trimmed();
+    if (searchText.isEmpty()) {
+        return false;
+    }
+
     auto docItem = getDocumentItem(searchDoc);
     if (!docItem) {
         docItem = getDocumentItem(Application::Instance->activeDocument());
@@ -1079,78 +1084,72 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
         FC_TRACE("item search no objects");
         return false;
     }
-    std::string txt(text.toUtf8().constData());
+
+    const QRegularExpression re = wildcardToRegex(searchText);
+    if (!re.isValid()) {
+        FC_TRACE("invalid item search pattern " << searchText.toUtf8().constData());
+        return false;
+    }
+
+    auto itemMatches = [&re](DocumentObjectItem* item) {
+        if (regexMatches(re, item->text(0)) || regexMatches(re, QString::fromUtf8(item->getName()))) {
+            return true;
+        }
+
+        auto* vp = item->object();
+        auto* obj = vp ? vp->getObject() : nullptr;
+        return obj && (regexMatches(re, QString::fromUtf8(obj->Label.getValue()))
+            || regexMatches(re, QString::fromUtf8(obj->Label2.getValue())));
+    };
+
+    auto findMatch = [&](auto&& findMatch, QTreeWidgetItem* parent) -> DocumentObjectItem* {
+        for (int i = 0, count = parent->childCount(); i < count; ++i) {
+            auto child = parent->child(i);
+            if (!child) {
+                continue;
+            }
+            if (child->type() == ObjectType) {
+                auto item = static_cast<DocumentObjectItem*>(child);
+                if (itemMatches(item)) {
+                    return item;
+                }
+            }
+            if (auto item = findMatch(findMatch, child)) {
+                return item;
+            }
+        }
+        return nullptr;
+    };
+
+    auto item = findMatch(findMatch, docItem);
+    if (!item) {
+        FC_TRACE("item " << searchText.toUtf8().constData() << " not found in " << doc->getName());
+        return false;
+    }
+
+    auto* vp = item->object();
+    auto obj = vp ? vp->getObject() : nullptr;
+    if (!obj) {
+        return false;
+    }
+
+    std::ostringstream subname;
+    App::DocumentObject* parent = nullptr;
+    item->getSubName(subname, parent);
+    if (parent) {
+        if (!obj->redirectSubName(subname, parent, nullptr)) {
+            subname << obj->getNameInDocument() << '.';
+        }
+        obj = parent;
+    }
+    const std::string subnameText = subname.str();
+
     try {
-        if (txt.empty()) {
-            return false;
-        }
-        if (txt.find("<<") == std::string::npos) {
-            auto pos = txt.find('.');
-            if (pos == std::string::npos) {
-                txt += '.';
-            }
-            else if (pos != txt.size() - 1) {
-                txt.insert(pos + 1, "<<");
-                if (txt.back() != '.') {
-                    txt += '.';
-                }
-                txt += ">>.";
-            }
-        }
-        else if (txt.back() != '.') {
-            txt += '.';
-        }
-        txt += "_self";
-        auto path = App::ObjectIdentifier::parse(objs.front(), txt);
-        if (path.getPropertyName() != "_self") {
-            FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return false;
-        }
-        auto obj = path.getDocumentObject();
-        if (!obj) {
-            FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return false;
-        }
-        std::string subname = path.getSubObjectName();
-        App::DocumentObject* parent = nullptr;
-        if (searchContextDoc) {
-            auto it = DocumentMap.find(searchContextDoc);
-            if (it != DocumentMap.end()) {
-                parent = it->second->getTopParent(obj, subname);
-                if (parent) {
-                    obj = parent;
-                    docItem = it->second;
-                    doc = docItem->document()->getDocument();
-                }
-            }
-        }
-        if (!parent) {
-            parent = docItem->getTopParent(obj, subname);
-            while (!parent) {
-                if (docItem->document()->getDocument() == obj->getDocument()) {
-                    // this shouldn't happen
-                    FC_LOG("Object " << txt << " not found in " << doc->getName());
-                    return false;
-                }
-                auto it = DocumentMap.find(Application::Instance->getDocument(obj->getDocument()));
-                if (it == DocumentMap.end()) {
-                    return false;
-                }
-                docItem = it->second;
-                parent = docItem->getTopParent(obj, subname);
-            }
-            obj = parent;
-        }
-        auto item = docItem->findItemByObject(true, obj, subname.c_str());
-        if (!item) {
-            FC_TRACE("item " << txt << " not found in " << doc->getName());
-            return false;
-        }
         scrollToItem(item);
         Selection().setPreselect(
             obj->getDocument()->getName(),
             obj->getNameInDocument(),
-            subname.c_str(),
+            subnameText.c_str(),
             0,
             0,
             0,
@@ -1162,7 +1161,7 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
             Gui::Selection().addSelection(
                 obj->getDocument()->getName(),
                 obj->getNameInDocument(),
-                subname.c_str()
+                subnameText.c_str()
             );
             Gui::Selection().selStackPush();
         }
@@ -1170,11 +1169,11 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
             searchObject = item->object()->getObject();
             item->setBackground(0, QColor(255, 255, 0, 100));
         }
-        FC_TRACE("found item " << txt);
+        FC_TRACE("found item " << searchText.toUtf8().constData());
         return true;
     }
     catch (...) {
-        FC_TRACE("item " << txt << " search exception in " << doc->getName());
+        FC_TRACE("item " << searchText.toUtf8().constData() << " search exception in " << doc->getName());
         return false;
     }
     return false;
