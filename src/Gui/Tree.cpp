@@ -120,6 +120,30 @@ bool regexMatches(const QRegularExpression& re, const QString& haystack)
     return re.isValid() && re.match(haystack).hasMatch();
 }
 
+class TreeUpdatesBlocker
+{
+public:
+    explicit TreeUpdatesBlocker(QTreeWidget* tree)
+        : tree(tree)
+        , updatesEnabled(tree && tree->updatesEnabled())
+    {
+        if (tree) {
+            tree->setUpdatesEnabled(false);
+        }
+    }
+
+    ~TreeUpdatesBlocker()
+    {
+        if (tree) {
+            tree->setUpdatesEnabled(updatesEnabled);
+        }
+    }
+
+private:
+    QTreeWidget* tree;
+    bool updatesEnabled;
+};
+
 }
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -1097,28 +1121,10 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
 
 bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
 {
-    Q_UNUSED(global);
     resetItemSearch();
 
     const QString searchText = text.trimmed();
     if (searchText.isEmpty()) {
-        return false;
-    }
-
-    auto docItem = getDocumentItem(searchDoc);
-    if (!docItem) {
-        docItem = getDocumentItem(Application::Instance->activeDocument());
-        if (!docItem) {
-            FC_TRACE("item search no document");
-            resetItemSearch();
-            return false;
-        }
-    }
-
-    auto doc = docItem->document()->getDocument();
-    const auto& objs = doc->getObjects();
-    if (objs.empty()) {
-        FC_TRACE("item search no objects");
         return false;
     }
 
@@ -1128,12 +1134,59 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
         return false;
     }
 
+    std::vector<DocumentItem*> docItems;
+    if (global) {
+        auto docs = App::GetApplication().getDocuments();
+        auto activeDoc = App::GetApplication().getActiveDocument();
+        for (auto it = docs.begin(); activeDoc && it != docs.end(); ++it) {
+            if (*it == activeDoc) {
+                docs.erase(it);
+                docs.insert(docs.begin(), activeDoc);
+                break;
+            }
+        }
+        for (auto appDoc : docs) {
+            if (!appDoc || appDoc->getObjects().empty()) {
+                continue;
+            }
+            auto guiDoc = Application::Instance->getDocument(appDoc);
+            if (auto docItem = getDocumentItem(guiDoc)) {
+                docItems.push_back(docItem);
+            }
+        }
+    }
+    else {
+        auto guiDoc = searchDoc ? searchDoc : Application::Instance->activeDocument();
+        if (auto docItem = getDocumentItem(guiDoc)) {
+            if (!docItem->document()->getDocument()->getObjects().empty()) {
+                docItems.push_back(docItem);
+            }
+        }
+    }
+
+    if (docItems.empty()) {
+        FC_TRACE("item search no document");
+        return false;
+    }
+
     QTreeWidgetItem* firstHit = nullptr;
     int hitCount = 0;
-    searchInDocumentItem(docItem, re, firstHit, hitCount);
+    {
+        TreeUpdatesBlocker updates(this);
+        for (auto docItem : docItems) {
+            searchInDocumentItem(docItem, re, firstHit, hitCount);
+            if (hitCount >= kSearchHitCap) {
+                break;
+            }
+        }
+    }
+
     if (hitCount == 0 || !firstHit) {
-        FC_TRACE("item " << searchText.toUtf8().constData() << " not found in " << doc->getName());
+        FC_TRACE("item " << searchText.toUtf8().constData() << " not found");
         return false;
+    }
+    if (hitCount >= kSearchHitCap) {
+        FC_TRACE("item search hit cap reached");
     }
 
     scrollToItem(firstHit);
@@ -1188,7 +1241,7 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
         return true;
     }
     catch (...) {
-        FC_TRACE("item " << searchText.toUtf8().constData() << " search exception in " << doc->getName());
+        FC_TRACE("item " << searchText.toUtf8().constData() << " search exception");
         resetItemSearch();
         return false;
     }
