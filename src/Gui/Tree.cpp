@@ -34,7 +34,6 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
-#include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
 #include <QToolTip>
@@ -67,6 +66,7 @@
 #include "MainWindow.h"
 #include "MenuManager.h"
 #include "TreeParams.h"
+#include "TreeSearchUtil.h"
 #include "View3DInventor.h"
 #include "ViewProviderDocumentObject.h"
 #include "Widgets.h"
@@ -85,40 +85,11 @@ FC_LOG_LEVEL_INIT("Tree", false, true, true)
 
 using namespace Gui;
 namespace sp = std::placeholders;
+using Gui::TreeSearchUtil::regexMatches;
+using Gui::TreeSearchUtil::wildcardToRegex;
 
 namespace
 {
-
-QRegularExpression wildcardToRegex(const QString& pattern)
-{
-    const bool hasWildcard = pattern.contains(QLatin1Char('*'))
-        || pattern.contains(QLatin1Char('?'));
-    const QString effectivePattern = hasWildcard ? pattern : QStringLiteral("*%1*").arg(pattern);
-
-    QString rx;
-    rx.reserve(effectivePattern.size() * 2 + 2);
-    rx += QLatin1Char('^');
-
-    for (const QChar ch : effectivePattern) {
-        if (ch == QLatin1Char('*')) {
-            rx += QStringLiteral(".*");
-        }
-        else if (ch == QLatin1Char('?')) {
-            rx += QLatin1Char('.');
-        }
-        else {
-            rx += QRegularExpression::escape(QString(ch));
-        }
-    }
-
-    rx += QLatin1Char('$');
-    return QRegularExpression(rx, QRegularExpression::CaseInsensitiveOption);
-}
-
-bool regexMatches(const QRegularExpression& re, const QString& haystack)
-{
-    return re.isValid() && re.match(haystack).hasMatch();
-}
 
 class TreeUpdatesBlocker
 {
