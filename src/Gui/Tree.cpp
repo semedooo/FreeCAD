@@ -66,6 +66,7 @@
 #include "MainWindow.h"
 #include "MenuManager.h"
 #include "TreeParams.h"
+#include "TreeSearchUtil.h"
 #include "View3DInventor.h"
 #include "ViewProviderDocumentObject.h"
 #include "Widgets.h"
@@ -84,6 +85,37 @@ FC_LOG_LEVEL_INIT("Tree", false, true, true)
 
 using namespace Gui;
 namespace sp = std::placeholders;
+using Gui::TreeSearchUtil::regexMatches;
+using Gui::TreeSearchUtil::wildcardToRegex;
+
+namespace
+{
+
+class TreeUpdatesBlocker
+{
+public:
+    explicit TreeUpdatesBlocker(QTreeWidget* tree)
+        : tree(tree)
+        , updatesEnabled(tree && tree->updatesEnabled())
+    {
+        if (tree) {
+            tree->setUpdatesEnabled(false);
+        }
+    }
+
+    ~TreeUpdatesBlocker()
+    {
+        if (tree) {
+            tree->setUpdatesEnabled(updatesEnabled);
+        }
+    }
+
+private:
+    QTreeWidget* tree;
+    bool updatesEnabled;
+};
+
+}
 
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -971,6 +1003,13 @@ void TreeWidget::checkTopParent(App::DocumentObject*& obj, std::string& subname)
 
 void TreeWidget::resetItemSearch()
 {
+    for (const auto& [item, brush] : searchHighlights) {
+        if (item) {
+            item->setBackground(0, brush);
+        }
+    }
+    searchHighlights.clear();
+
     if (!searchObject) {
         return;
     }
@@ -986,6 +1025,36 @@ void TreeWidget::resetItemSearch()
         }
     }
     searchObject = nullptr;
+}
+
+void TreeWidget::searchInDocumentItem(
+    QTreeWidgetItem* node,
+    const QRegularExpression& re,
+    QTreeWidgetItem*& firstHit,
+    int& hitCount
+)
+{
+    if (!node || hitCount >= kSearchHitCap) {
+        return;
+    }
+
+    const QString label = node->text(0);
+    if (regexMatches(re, label)) {
+        ++hitCount;
+        if (!firstHit) {
+            firstHit = node;
+        }
+        for (QTreeWidgetItem* parent = node->parent(); parent; parent = parent->parent()) {
+            parent->setExpanded(true);
+        }
+        node->setExpanded(true);
+        searchHighlights.emplace_back(node, node->background(0));
+        node->setBackground(0, QColor(255, 255, 0, 100));
+    }
+
+    for (int i = 0, count = node->childCount(); i < count && hitCount < kSearchHitCap; ++i) {
+        searchInDocumentItem(node->child(i), re, firstHit, hitCount);
+    }
 }
 
 void TreeWidget::startItemSearch(QLineEdit* edit)
@@ -1025,94 +1094,102 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
 {
     resetItemSearch();
 
-    auto docItem = getDocumentItem(searchDoc);
-    if (!docItem) {
-        docItem = getDocumentItem(Application::Instance->activeDocument());
-        if (!docItem) {
-            FC_TRACE("item search no document");
-            resetItemSearch();
-            return false;
+    const QString searchText = text.trimmed();
+    if (searchText.isEmpty()) {
+        return false;
+    }
+
+    const QRegularExpression re = wildcardToRegex(searchText);
+    if (!re.isValid()) {
+        FC_TRACE("invalid item search pattern " << searchText.toUtf8().constData());
+        return false;
+    }
+
+    std::vector<DocumentItem*> docItems;
+    if (global) {
+        auto docs = App::GetApplication().getDocuments();
+        auto activeDoc = App::GetApplication().getActiveDocument();
+        for (auto it = docs.begin(); activeDoc && it != docs.end(); ++it) {
+            if (*it == activeDoc) {
+                docs.erase(it);
+                docs.insert(docs.begin(), activeDoc);
+                break;
+            }
+        }
+        for (auto appDoc : docs) {
+            if (!appDoc || appDoc->getObjects().empty()) {
+                continue;
+            }
+            auto guiDoc = Application::Instance->getDocument(appDoc);
+            if (auto docItem = getDocumentItem(guiDoc)) {
+                docItems.push_back(docItem);
+            }
+        }
+    }
+    else {
+        auto guiDoc = searchDoc ? searchDoc : Application::Instance->activeDocument();
+        if (auto docItem = getDocumentItem(guiDoc)) {
+            if (!docItem->document()->getDocument()->getObjects().empty()) {
+                docItems.push_back(docItem);
+            }
         }
     }
 
-    auto doc = docItem->document()->getDocument();
-    const auto& objs = doc->getObjects();
-    if (objs.empty()) {
-        FC_TRACE("item search no objects");
+    if (docItems.empty()) {
+        FC_TRACE("item search no document");
         return false;
     }
-    std::string txt(text.toUtf8().constData());
+
+    QTreeWidgetItem* firstHit = nullptr;
+    int hitCount = 0;
+    {
+        TreeUpdatesBlocker updates(this);
+        for (auto docItem : docItems) {
+            searchInDocumentItem(docItem, re, firstHit, hitCount);
+            if (hitCount >= kSearchHitCap) {
+                break;
+            }
+        }
+    }
+
+    if (hitCount == 0 || !firstHit) {
+        FC_TRACE("item " << searchText.toUtf8().constData() << " not found");
+        return false;
+    }
+    if (hitCount >= kSearchHitCap) {
+        FC_TRACE("item search hit cap reached");
+    }
+
+    scrollToItem(firstHit);
+    if (firstHit->type() != ObjectType) {
+        FC_TRACE("found item " << searchText.toUtf8().constData());
+        return true;
+    }
+
+    auto item = static_cast<DocumentObjectItem*>(firstHit);
+    auto* vp = item->object();
+    auto obj = vp ? vp->getObject() : nullptr;
+    if (!obj) {
+        resetItemSearch();
+        return false;
+    }
+
+    std::ostringstream subname;
+    App::DocumentObject* parent = nullptr;
+    item->getSubName(subname, parent);
+    if (parent) {
+        if (!obj->redirectSubName(subname, parent, nullptr)) {
+            subname << obj->getNameInDocument() << '.';
+        }
+        obj = parent;
+    }
+    const std::string subnameText = subname.str();
+
     try {
-        if (txt.empty()) {
-            return false;
-        }
-        if (txt.find("<<") == std::string::npos) {
-            auto pos = txt.find('.');
-            if (pos == std::string::npos) {
-                txt += '.';
-            }
-            else if (pos != txt.size() - 1) {
-                txt.insert(pos + 1, "<<");
-                if (txt.back() != '.') {
-                    txt += '.';
-                }
-                txt += ">>.";
-            }
-        }
-        else if (txt.back() != '.') {
-            txt += '.';
-        }
-        txt += "_self";
-        auto path = App::ObjectIdentifier::parse(objs.front(), txt);
-        if (path.getPropertyName() != "_self") {
-            FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return false;
-        }
-        auto obj = path.getDocumentObject();
-        if (!obj) {
-            FC_TRACE("Object " << txt << " not found in " << doc->getName());
-            return false;
-        }
-        std::string subname = path.getSubObjectName();
-        App::DocumentObject* parent = nullptr;
-        if (searchContextDoc) {
-            auto it = DocumentMap.find(searchContextDoc);
-            if (it != DocumentMap.end()) {
-                parent = it->second->getTopParent(obj, subname);
-                if (parent) {
-                    obj = parent;
-                    docItem = it->second;
-                    doc = docItem->document()->getDocument();
-                }
-            }
-        }
-        if (!parent) {
-            parent = docItem->getTopParent(obj, subname);
-            while (!parent) {
-                if (docItem->document()->getDocument() == obj->getDocument()) {
-                    // this shouldn't happen
-                    FC_LOG("Object " << txt << " not found in " << doc->getName());
-                    return false;
-                }
-                auto it = DocumentMap.find(Application::Instance->getDocument(obj->getDocument()));
-                if (it == DocumentMap.end()) {
-                    return false;
-                }
-                docItem = it->second;
-                parent = docItem->getTopParent(obj, subname);
-            }
-            obj = parent;
-        }
-        auto item = docItem->findItemByObject(true, obj, subname.c_str());
-        if (!item) {
-            FC_TRACE("item " << txt << " not found in " << doc->getName());
-            return false;
-        }
-        scrollToItem(item);
         Selection().setPreselect(
             obj->getDocument()->getName(),
             obj->getNameInDocument(),
-            subname.c_str(),
+            subnameText.c_str(),
             0,
             0,
             0,
@@ -1124,19 +1201,19 @@ bool TreeWidget::itemSearch(const QString& text, bool select, bool global)
             Gui::Selection().addSelection(
                 obj->getDocument()->getName(),
                 obj->getNameInDocument(),
-                subname.c_str()
+                subnameText.c_str()
             );
             Gui::Selection().selStackPush();
         }
         else {
             searchObject = item->object()->getObject();
-            item->setBackground(0, QColor(255, 255, 0, 100));
         }
-        FC_TRACE("found item " << txt);
+        FC_TRACE("found item " << searchText.toUtf8().constData());
         return true;
     }
     catch (...) {
-        FC_TRACE("item " << txt << " search exception in " << doc->getName());
+        FC_TRACE("item " << searchText.toUtf8().constData() << " search exception");
+        resetItemSearch();
         return false;
     }
     return false;
