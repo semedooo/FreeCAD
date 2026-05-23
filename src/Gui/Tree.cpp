@@ -40,6 +40,8 @@
 #include <QVBoxLayout>
 #include <QToolButton>
 #include <QCheckBox>
+#include <QStringListModel>
+#include <QCompleter>
 
 
 #include <Base/Console.h>
@@ -90,6 +92,17 @@ using Gui::TreeSearchUtil::wildcardToRegex;
 
 namespace
 {
+
+// Um completer que não esconde itens, mostra TUDO o que a árvore lhe der
+class UnfilteredCompleter : public QCompleter {
+public:
+    UnfilteredCompleter(QAbstractItemModel *model, QObject *parent = nullptr)
+        : QCompleter(model, parent) {}
+        
+    QStringList splitPath(const QString &) const override {
+        return QStringList() << ""; // Diz ao Qt para não aplicar o seu filtro interno
+    }
+};
 
 class TreeUpdatesBlocker
 {
@@ -1001,6 +1014,18 @@ void TreeWidget::checkTopParent(App::DocumentObject*& obj, std::string& subname)
     }
 }
 
+QStringList TreeWidget::getHighlightedNames() const
+{
+    QStringList names;
+    for (const auto& highlight : searchHighlights) {
+        if (highlight.first) {
+            names << highlight.first->text(0);
+        }
+    }
+    names.removeDuplicates();
+    return names;
+}
+
 void TreeWidget::resetItemSearch()
 {
     for (const auto& [item, brush] : searchHighlights) {
@@ -1059,6 +1084,8 @@ void TreeWidget::searchInDocumentItem(
 
 void TreeWidget::startItemSearch(QLineEdit* edit)
 {
+    Q_UNUSED(edit); // Diz ao compilador: "Eu sei que não uso o edit aqui, não dês warning"
+
     resetItemSearch();
     searchDoc = nullptr;
     searchContextDoc = nullptr;
@@ -1075,18 +1102,6 @@ void TreeWidget::startItemSearch(QLineEdit* edit)
     }
     else {
         searchDoc = Application::Instance->activeDocument();
-    }
-
-    App::DocumentObject* obj = nullptr;
-    if (searchContextDoc && !searchContextDoc->getDocument()->getObjects().empty()) {
-        obj = searchContextDoc->getDocument()->getObjects().front();
-    }
-    else if (searchDoc && !searchDoc->getDocument()->getObjects().empty()) {
-        obj = searchDoc->getDocument()->getObjects().front();
-    }
-
-    if (obj) {
-        static_cast<ExpressionLineEdit*>(edit)->setDocumentObject(obj);
     }
 }
 
@@ -4254,15 +4269,19 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     rowLayout->setContentsMargins(0, 0, 0, 0);
     rowLayout->setSpacing(2);
 
-    this->searchBox = new Gui::ExpressionLineEdit(this, true);
-    static_cast<ExpressionLineEdit*>(this->searchBox)
-        ->setExactMatch(Gui::ExpressionParameter::instance()->isExactMatch());
+    this->searchBox = new QLineEdit(this);
     this->searchBox->setPlaceholderText(tr("Search..."));
     this->searchBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    searchBox->setToolTip(tr("Search the model tree.\n"
-                         "Use * for any sequence, ? for a single character.\n"));
+    this->searchBox->setToolTip(tr("Search the model tree.\n"
+                                   "Use * for any sequence, ? for a single character.\n"));
     this->searchBox->installEventFilter(this);
-    
+
+    QStringListModel* listModel = new QStringListModel(this);
+    UnfilteredCompleter* completer = new UnfilteredCompleter(listModel, this);
+    completer->setCompletionMode(QCompleter::PopupCompletion);
+    completer->setCaseSensitivity(Qt::CaseInsensitive);
+    this->searchBox->setCompleter(completer);
+
     historyMenu = new QMenu(this);
     this->historyBtn = new QToolButton(searchRow);
     this->historyBtn->setAutoRaise(true);
@@ -4276,6 +4295,7 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     this->globalBtn = new QCheckBox(tr("Global"), searchRow);
     this->globalBtn->setToolTip(tr("<b>Global Search</b><br>Enable to search in the tree models of all open documents"));
     this->globalBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+    this->globalBtn->setChecked(true);
     
     rowLayout->addWidget(searchBox);
     rowLayout->addWidget(historyBtn);
@@ -4285,7 +4305,7 @@ TreePanel::TreePanel(const char* name, QWidget* parent)
     searchRow->hide();
     
     connect(this->searchBox, &QLineEdit::returnPressed, this, &TreePanel::accept);
-    connect(this->searchBox, &QLineEdit::textChanged, this, &TreePanel::itemSearch);
+    connect(this->searchBox, &QLineEdit::textEdited, this, &TreePanel::itemSearch);
     connect(this->historyMenu, &QMenu::triggered,
             this, &TreePanel::onHistoryActionTriggered);
 
@@ -4360,11 +4380,6 @@ bool TreePanel::eventFilter(QObject* obj, QEvent* ev)
 
 void TreePanel::showEditor()
 {
-    {
-        QSignalBlocker block(globalBtn);
-        bool noSelection = this->treeWidget->selectedItems().isEmpty();
-        globalBtn->setChecked(noSelection);
-    }
     searchRow->show();
     searchBox->setFocus();
     treeWidget->startItemSearch(searchBox);
@@ -4372,7 +4387,6 @@ void TreePanel::showEditor()
 
 void TreePanel::hideEditor()
 {
-    static_cast<ExpressionLineEdit*>(this->searchBox)->setDocumentObject(nullptr);
     this->searchBox->clear();
     this->searchRow->hide();
     this->treeWidget->resetItemSearch();
@@ -4385,6 +4399,17 @@ void TreePanel::hideEditor()
 void TreePanel::itemSearch(const QString& text)
 {
     this->treeWidget->itemSearch(text, false, this->globalBtn->isChecked());
+
+    QStringList results;
+    if (!text.isEmpty()) {
+        results = this->treeWidget->getHighlightedNames();
+    }
+
+    if (QCompleter* comp = this->searchBox->completer()) {
+        if (auto model = qobject_cast<QStringListModel*>(comp->model())) {
+            model->setStringList(results);
+        }
+    }
 }
 
 void TreePanel::onHistoryActionTriggered(QAction* action)

@@ -142,6 +142,7 @@ public:
     void resetItemSearch();
     void startItemSearch(QLineEdit*);
     bool itemSearch(const QString& text, bool select, bool global = false);
+    QStringList getHighlightedNames() const;
 
     static void synchronizeSelectionCheckBoxes();
     static void updateVisibilityIcons();
@@ -609,7 +610,7 @@ private Q_SLOTS:
 private:
     TreeWidget*              treeWidget  = nullptr;
     QWidget*                 searchRow   = nullptr;
-    Gui::ExpressionLineEdit* searchBox   = nullptr;
+    QLineEdit*               searchBox   = nullptr;
     QToolButton*             historyBtn  = nullptr;
     QCheckBox*               globalBtn   = nullptr;
     QMenu*                   historyMenu = nullptr;
