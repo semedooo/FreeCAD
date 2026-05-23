@@ -45,6 +45,8 @@ class QToolButton;
 class QMenu;
 class QCheckBox;
 class QRegularExpression;
+class QListWidget;
+class QListWidgetItem;
 
 namespace Gui
 {
@@ -58,7 +60,7 @@ class TreeWidgetItemDelegate;
 
 class DocumentItem;
 class Command;
-class ExpressionLineEdit;
+
 
 GuiExport bool isTreeViewDragging();
 
@@ -140,6 +142,7 @@ public:
     void startDragging();
 
     void resetItemSearch();
+    QStringList searchHighlightLabels() const;
     void startItemSearch(QLineEdit*);
     bool itemSearch(const QString& text, bool select, bool global = false);
 
@@ -605,11 +608,14 @@ private Q_SLOTS:
     void hideEditor();
     void itemSearch(const QString& text);
     void onHistoryActionTriggered(QAction* action);
+    void updateSearchDropdown();
+    void onDropdownActivated(QListWidgetItem* item);
 
 private:
     TreeWidget*              treeWidget  = nullptr;
     QWidget*                 searchRow   = nullptr;
-    Gui::ExpressionLineEdit* searchBox   = nullptr;
+    QLineEdit*               searchBox   = nullptr;
+    QListWidget*             searchDropdown = nullptr;
     QToolButton*             historyBtn  = nullptr;
     QCheckBox*               globalBtn   = nullptr;
     QMenu*                   historyMenu = nullptr;
